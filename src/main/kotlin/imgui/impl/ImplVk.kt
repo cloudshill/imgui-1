@@ -1,7 +1,6 @@
 package imgui.impl
 
 import glm_.*
-import glm_.vec2.Vec2
 import glm_.vec4.Vec4
 import imgui.ImGui.io
 import imgui.DrawData
@@ -21,13 +20,14 @@ import org.lwjgl.vulkan.VK10.VK_COLOR_COMPONENT_B_BIT
 import org.lwjgl.vulkan.VK10.VK_COLOR_COMPONENT_G_BIT
 import org.lwjgl.vulkan.VK10.VK_COLOR_COMPONENT_R_BIT
 import org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO
-import org.lwjgl.vulkan.VK10.VK_SHARING_MODE_EXCLUSIVE
 import org.lwjgl.vulkan.VK10.VK_IMAGE_USAGE_TRANSFER_DST_BIT
 import org.lwjgl.vulkan.VK10.VK_IMAGE_USAGE_SAMPLED_BIT
 import org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
 import org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
-import org.lwjgl.vulkan.VK10.VK_INDEX_TYPE_UINT16
-import org.lwjgl.vulkan.VK10.vkCmdBindIndexBuffer
+import vkk.extensionFunctions.destroyImageView
+import vkk.extensionFunctions.getSurfaceCapabilitiesKHR
+import vkk.extensionFunctions.memoryProperties
+import vkk.extensionFunctions.waitIdle
 
 
 /** glsl_shader.vert, compiled with:
@@ -159,7 +159,7 @@ private data class FrameDataForRender(
         var indexBuffer: VkBuffer
 )
 
-class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : LwjglRendererI {
+class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) : LwjglRendererI {
 
     val instance = initInfo.instance
     val physicalDevice = initInfo.physicalDevice
@@ -215,17 +215,17 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
         if (fontSampler.isInvalid) {
             stackPush().let { stack ->
                 val lb = stack.mallocLong(1)
-                val info = VkSamplerCreateInfo.callocStack(stack)
-                info.sType(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO)
-                info.magFilter(VK_FILTER_LINEAR)
-                info.minFilter(VK_FILTER_LINEAR)
-                info.mipmapMode(VK_SAMPLER_MIPMAP_MODE_LINEAR)
-                info.addressModeU(VK_SAMPLER_ADDRESS_MODE_REPEAT)
-                info.addressModeV(VK_SAMPLER_ADDRESS_MODE_REPEAT)
-                info.addressModeW(VK_SAMPLER_ADDRESS_MODE_REPEAT)
-                info.minLod(-1000.0f)
-                info.maxLod(1000.0f)
-                info.maxLod(1.0f)
+                val info = vk.SamplerCreateInfo {
+                    magFilter = VkFilter.LINEAR
+                    minFilter = VkFilter.LINEAR
+                    mipmapMode = VkSamplerMipmapMode.LINEAR
+                    addressModeU = VkSamplerAddressMode.REPEAT
+                    addressModeV = VkSamplerAddressMode.REPEAT
+                    addressModeW = VkSamplerAddressMode.REPEAT
+                    minLod = -1000.0f
+                    maxLod = 1000.0f
+                    maxLod = 1.0f
+                }
                 err = vkCreateSampler(device, info, allocator, lb).vkr
                 checkVkResult(err)
                 fontSampler = VkSampler(lb[0])
@@ -235,15 +235,15 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
         if (descriptorSetLayout.isInvalid) {
             stackPush().let { stack ->
                 val lb = stack.mallocLong(1)
-                val samplers = stack.longs(fontSampler.L)
-                val binding = VkDescriptorSetLayoutBinding.callocStack(1, stack)
-                binding[0].descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                binding[0].descriptorCount(1)
-                binding[0].stageFlags(VK_SHADER_STAGE_FRAGMENT_BIT)
-                binding[0].pImmutableSamplers(samplers)
-                val createInfo = VkDescriptorSetLayoutCreateInfo.callocStack(stack)
-                createInfo.sType(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO)
-                createInfo.pBindings(binding)
+                val binding = vk.DescriptorSetLayoutBinding {
+                    descriptorType = VkDescriptorType.COMBINED_IMAGE_SAMPLER
+                    descriptorCount = 1
+                    stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
+                    immutableSampler = fontSampler
+                }
+                val createInfo = vk.DescriptorSetLayoutCreateInfo {
+                    this.binding = binding
+                }
                 err = vkCreateDescriptorSetLayout(device, createInfo, allocator, lb).vkr
                 checkVkResult(err)
                 descriptorSetLayout = VkDescriptorSetLayout(lb[0])
@@ -252,10 +252,10 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
 
         stackPush().let { stack ->
             val lb = stack.mallocLong(1)
-            val allocInfo = VkDescriptorSetAllocateInfo.callocStack(stack)
-            allocInfo.sType(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO)
-            allocInfo.descriptorPool(descriptorPool.L)
-            allocInfo.pSetLayouts(stack.longs(descriptorSetLayout.L))
+            val allocInfo = vk.DescriptorSetAllocateInfo {
+                descriptorPool = descriptorPool
+                setLayout = descriptorSetLayout
+            }
             err = vkAllocateDescriptorSets(device, allocInfo, lb).vkr
             checkVkResult(err)
             descriptorSet = VkDescriptorSet(lb[0])
@@ -264,14 +264,15 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
         if (pipelineLayout.isInvalid) {
             stackPush().let { stack ->
                 val lb = stack.mallocLong(1)
-                val pushConstants = VkPushConstantRange.callocStack(1, stack)
-                pushConstants[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT
-                pushConstants[0].offset = Float.BYTES * 0
-                pushConstants[0].size = Float.BYTES * 4
-                val layoutInfo = VkPipelineLayoutCreateInfo.callocStack(stack)
-                layoutInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO)
-                layoutInfo.setLayouts = stack.longs(descriptorSetLayout.L)
-                layoutInfo.pushConstantRanges = pushConstants
+                val pushConstants = vk.PushConstantRange {
+                    stageFlags = VK_SHADER_STAGE_VERTEX_BIT
+                    offset = Float.BYTES * 0
+                    size = Float.BYTES * 4
+                }
+                val layoutInfo = vk.PipelineLayoutCreateInfo {
+                    setLayout = descriptorSetLayout
+                    pushConstantRange = pushConstants
+                }
                 err = vkCreatePipelineLayout(device, layoutInfo, allocator, lb).vkr
                 checkVkResult(err)
                 pipelineLayout = VkPipelineLayout(lb[0])
@@ -290,94 +291,95 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
             stage[1].module = fragInfo
             stage[1].pName = stack.ASCII("main")
 
-            val bindingDesc = VkVertexInputBindingDescription.callocStack(2, stack)
-            bindingDesc[0].stride = DrawVert.size
-            bindingDesc[0].inputRate = VkVertexInputRate.VERTEX
+            val bindingDesc = vk.VertexInputBindingDescription {
+                stride = DrawVert.size
+                inputRate = VkVertexInputRate.VERTEX
+            }
 
             val attributeDesc = VkVertexInputAttributeDescription.callocStack(2, stack)
             attributeDesc[0].location = 0
-            attributeDesc[0].binding = bindingDesc[0].binding
+            attributeDesc[0].binding = bindingDesc.binding
             attributeDesc[0].format = VkFormat.R32G32_SFLOAT //VK_FORMAT_R32G32_SFLOAT
             attributeDesc[0].offset = DrawVert.ofsPos
             attributeDesc[1].location = 1
-            attributeDesc[1].binding = bindingDesc[0].binding
+            attributeDesc[1].binding = bindingDesc.binding
             attributeDesc[1].format = VkFormat.R32G32_SFLOAT //VK_FORMAT_R32G32_SFLOAT
             attributeDesc[1].offset = DrawVert.ofsUv
             attributeDesc[2].location = 2
-            attributeDesc[2].binding = bindingDesc[0].binding
+            attributeDesc[2].binding = bindingDesc.binding
             attributeDesc[2].format = VkFormat.R8G8B8A8_UNORM //VK_FORMAT_R8G8B8A8_UNORM
             attributeDesc[2].offset = DrawVert.ofsCol
 
-            val vertexInfo = VkPipelineVertexInputStateCreateInfo.callocStack(stack)
-            vertexInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO)
-            vertexInfo.vertexBindingDescriptions = bindingDesc
-            vertexInfo.vertexAttributeDescriptions = attributeDesc
+            val vertexInfo = vk.PipelineVertexInputStateCreateInfo {
+                vertexBindingDescription = bindingDesc
+                vertexAttributeDescriptions = attributeDesc
+            }
 
-            val iaInfo = VkPipelineInputAssemblyStateCreateInfo.callocStack(stack)
-            iaInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO)
-            iaInfo.topology = VkPrimitiveTopology.TRIANGLE_LIST
+            val iaInfo = vk.PipelineInputAssemblyStateCreateInfo {
+                topology = VkPrimitiveTopology.TRIANGLE_LIST
+            }
 
-            val viewportInfo = VkPipelineViewportStateCreateInfo.callocStack(stack)
-            viewportInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO)
-            viewportInfo.viewportCount = 1
-            viewportInfo.scissorCount = 1
+            val viewportInfo = vk.PipelineViewportStateCreateInfo {
+                viewportCount = 1
+                scissorCount = 1
+            }
 
-            val rasterInfo = VkPipelineRasterizationStateCreateInfo.callocStack(stack)
-            rasterInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO)
-            rasterInfo.polygonMode = VkPolygonMode.FILL
-            rasterInfo.cullMode = VkCullMode.NONE.i
-            rasterInfo.frontFace = VkFrontFace.COUNTER_CLOCKWISE
-            rasterInfo.lineWidth = 1.0f
+            val rasterInfo = vk.PipelineRasterizationStateCreateInfo {
+                polygonMode = VkPolygonMode.FILL
+                cullMode = VkCullMode.NONE.i
+                frontFace = VkFrontFace.COUNTER_CLOCKWISE
+                lineWidth = 1.0f
+            }
 
-            val msInfo = VkPipelineMultisampleStateCreateInfo.callocStack(stack)
-            msInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO)
-            msInfo.rasterizationSamples = VkSampleCount._1_BIT
+            val msInfo = vk.PipelineMultisampleStateCreateInfo {
+                rasterizationSamples = VkSampleCount._1_BIT
+            }
 
-            val colorAttachment = VkPipelineColorBlendAttachmentState.callocStack(1, stack)
-            colorAttachment[0].blendEnable = true
-            colorAttachment[0].srcColorBlendFactor = VkBlendFactor.SRC_ALPHA
-            colorAttachment[0].dstColorBlendFactor = VkBlendFactor.ONE_MINUS_SRC_ALPHA
-            colorAttachment[0].colorBlendOp = VkBlendOp.ADD
-            colorAttachment[0].srcAlphaBlendFactor = VkBlendFactor.ONE_MINUS_SRC_ALPHA
-            colorAttachment[0].dstAlphaBlendFactor = VkBlendFactor.ZERO
-            colorAttachment[0].alphaBlendOp = VkBlendOp.ADD
-            colorAttachment[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT or VK_COLOR_COMPONENT_G_BIT or VK_COLOR_COMPONENT_B_BIT or VK_COLOR_COMPONENT_A_BIT
+            val colorAttachment = vk.PipelineColorBlendAttachmentState {
+                blendEnable = true
+                srcColorBlendFactor = VkBlendFactor.SRC_ALPHA
+                dstColorBlendFactor = VkBlendFactor.ONE_MINUS_SRC_ALPHA
+                colorBlendOp = VkBlendOp.ADD
+                srcAlphaBlendFactor = VkBlendFactor.ONE_MINUS_SRC_ALPHA
+                dstAlphaBlendFactor = VkBlendFactor.ZERO
+                alphaBlendOp = VkBlendOp.ADD
+                colorWriteMask = VK_COLOR_COMPONENT_R_BIT or VK_COLOR_COMPONENT_G_BIT or VK_COLOR_COMPONENT_B_BIT or VK_COLOR_COMPONENT_A_BIT
+            }
 
-            val depthInfo = VkPipelineDepthStencilStateCreateInfo.callocStack(stack)
-            depthInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO)
+            val depthInfo = vk.PipelineDepthStencilStateCreateInfo {}
 
-            val blendInfo = VkPipelineColorBlendStateCreateInfo.callocStack(stack)
-            blendInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO)
-            blendInfo.attachments = colorAttachment
+            val blendInfo = vk.PipelineColorBlendStateCreateInfo {
+                attachment = colorAttachment
+            }
 
             val dynStates = VkDynamicStateBuffer(listOf(VkDynamicState.VIEWPORT, VkDynamicState.SCISSOR))
 
-            val dynamicState = VkPipelineDynamicStateCreateInfo.callocStack(stack)
-            dynamicState.sType(VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO)
-            dynamicState.dynamicStates = dynStates
+            val dynamicState = vk.PipelineDynamicStateCreateInfo {
+                dynamicStates = dynStates
+            }
 
-            val info = VkGraphicsPipelineCreateInfo.callocStack(1, stack)
-            info[0].sType(VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO)
-            info[0].flags = PIPELINE_CREATE_FLAGS
-            info[0].stages = stage
-            info[0].vertexInputState = vertexInfo
-            info[0].inputAssemblyState = iaInfo
-            info[0].viewportState = viewportInfo
-            info[0].rasterizationState = rasterInfo
-            info[0].multisampleState = msInfo
-            info[0].depthStencilState = depthInfo
-            info[0].colorBlendState = blendInfo
-            info[0].dynamicState = dynamicState
-            info[0].layout = pipelineLayout
-            info[0].renderPass = renderPass
+            val info = vk.GraphicsPipelineCreateInfo {
+                flags = PIPELINE_CREATE_FLAGS
+                stages = stage
+                vertexInputState = vertexInfo
+                inputAssemblyState = iaInfo
+                viewportState = viewportInfo
+                rasterizationState = rasterInfo
+                multisampleState = msInfo
+                depthStencilState = depthInfo
+                colorBlendState = blendInfo
+                this.dynamicState = dynamicState
+                layout = pipelineLayout
+                this.renderPass = vkRenderPass
+            }
 
-            err = vkCreateGraphicsPipelines(device, pipelineCache.L, info, allocator, lb).vkr
+            err = vkCreateGraphicsPipelines(device, pipelineCache, VkGraphicsPipelineCreateInfo.callocStack(1).put(0, info), allocator, lb).vkr
             checkVkResult(err)
 
             pipeline = VkPipeline(lb[0])
 
-            vkDestroyShaderModule(device, vertInfo.L, allocator)
-            vkDestroyShaderModule(device, fragInfo.L, allocator)
+            vkDestroyShaderModule(device, vertInfo, allocator)
+            vkDestroyShaderModule(device, fragInfo, allocator)
         }
 
         createFontsTexture()
@@ -392,151 +394,154 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
         /*  Load as RGBA 32-bits (75% of the memory is wasted, but default font is so small) because it is more likely
             to be compatible with user's existing shaders. If your ImTextureId represent a higher-level concept than
             just a GL texture id, consider calling GetTexDataAsAlpha8() instead to save on GPU memory.  */
-        val (pixels, size) = io.fonts.getTexDataAsRGBA32()
+        val (pixels, fontImageSize) = io.fonts.getTexDataAsRGBA32()
 
-        val uploadSize = VkDeviceSize(size.x * size.y * 4 * Byte.BYTES.L)
+        val uploadSize = VkDeviceSize(fontImageSize.x * fontImageSize.y * 4 * Byte.BYTES.L)
 
         var err: VkResult
 
         stackPush().let { stack ->
             val lb = stack.mallocLong(1)
-            val info = VkImageCreateInfo.callocStack(stack)
-            info.sType(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO)
-            info.imageType = VkImageType._2D
-            info.format = VkFormat.R8G8B8A8_UNORM
-            info.extent.width = size.x
-            info.extent.height = size.y
-            info.extent.depth = 1
-            info.mipLevels = 1
-            info.arrayLayers = 1
-            info.samples = VkSampleCount._1_BIT
-            info.tiling = VkImageTiling.OPTIMAL
-            info.usage = VK_IMAGE_USAGE_SAMPLED_BIT or VK_IMAGE_USAGE_TRANSFER_DST_BIT
-            info.sharingMode = VkSharingMode.EXCLUSIVE
-            info.initialLayout = VkImageLayout.UNDEFINED
+            val info = vk.ImageCreateInfo {
+                imageType = VkImageType._2D
+                format = VkFormat.R8G8B8A8_UNORM
+                extent.width = fontImageSize.x
+                extent.height = fontImageSize.y
+                extent.depth = 1
+                mipLevels = 1
+                arrayLayers = 1
+                samples = VkSampleCount._1_BIT
+                tiling = VkImageTiling.OPTIMAL
+                usage = VK_IMAGE_USAGE_SAMPLED_BIT or VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                sharingMode = VkSharingMode.EXCLUSIVE
+                initialLayout = VkImageLayout.UNDEFINED
+            }
             err = vkCreateImage(device, info, allocator, lb).vkr
             checkVkResult(err)
             fontImage = VkImage(lb[0])
 
             val req = VkMemoryRequirements.callocStack(stack)
-            vkGetImageMemoryRequirements(device, fontImage.L, req)
+            vkGetImageMemoryRequirements(device, fontImage, req)
 
-            val allocInfo = VkMemoryAllocateInfo.callocStack(stack)
-            allocInfo.sType(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO)
-            allocInfo.allocationSize = req.size
-            allocInfo.memoryTypeIndex = memoryType(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, req.memoryTypeBits)
+            val allocInfo = vk.MemoryAllocateInfo {
+                allocationSize = req.size
+                memoryTypeIndex = memoryType(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, req.memoryTypeBits)
+            }
             err = vkAllocateMemory(device, allocInfo, allocator, lb).vkr
             checkVkResult(err)
             fontMemory = VkDeviceMemory(lb[0])
-            err = vkBindImageMemory(device, fontImage.L, fontMemory.L, 0).vkr
+            err = vkBindImageMemory(device, fontImage, fontMemory, 0).vkr
             checkVkResult(err)
         }
 
         stackPush().let { stack ->
             val lb = stack.mallocLong(1)
-            val info = VkImageViewCreateInfo.callocStack(stack)
-            info.sType(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO)
-            info.image = fontImage
-            info.viewType = VkImageViewType._2D
-            info.format = VkFormat.R8G8B8A8_UNORM
-            info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
-            info.subresourceRange.levelCount = 1
-            info.subresourceRange.layerCount = 1
+            val info = vk.ImageViewCreateInfo {
+                image = fontImage
+                viewType = VkImageViewType._2D
+                format = VkFormat.R8G8B8A8_UNORM
+                subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
+                subresourceRange.levelCount = 1
+                subresourceRange.layerCount = 1
+            }
             err = vkCreateImageView(device, info, allocator, lb).vkr
             checkVkResult(err)
             fontView = VkImageView(lb[0])
         }
 
         stackPush().let { stack ->
-            val descImage = VkDescriptorImageInfo.callocStack(1, stack)
-            descImage[0].sampler = fontSampler
-            descImage[0].imageView = fontView
-            descImage[0].imageLayout = VkImageLayout.SHADER_READ_ONLY_OPTIMAL
+            val descImage = vk.DescriptorImageInfo {
+                sampler = fontSampler
+                imageView = fontView
+                imageLayout = VkImageLayout.SHADER_READ_ONLY_OPTIMAL
+            }
 
-            val writeDesc = VkWriteDescriptorSet.callocStack(1, stack)
-            writeDesc[0].sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET)
-            writeDesc[0].dstSet = descriptorSet
-            writeDesc[0].descriptorType = VkDescriptorType.COMBINED_IMAGE_SAMPLER
-            writeDesc[0].imageInfo = descImage
-            vkUpdateDescriptorSets(device, writeDesc, null)
+            val writeDesc = vk.WriteDescriptorSet {
+                dstSet = descriptorSet
+                descriptorType = VkDescriptorType.COMBINED_IMAGE_SAMPLER
+                imageInfo = descImage
+            }
+
+            vkUpdateDescriptorSets(device, VkWriteDescriptorSet.callocStack(1).put(0, writeDesc), null)
         }
 
         stackPush().let { stack ->
             val lb = stack.mallocLong(1)
-            val bufferInfo = VkBufferCreateInfo.callocStack(stack)
-            bufferInfo.sType(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO)
-            bufferInfo.size = uploadSize
-            bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
-            bufferInfo.sharingMode = VkSharingMode.EXCLUSIVE
+            val bufferInfo = vk.BufferCreateInfo {
+                size = uploadSize
+                usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+                sharingMode = VkSharingMode.EXCLUSIVE
+            }
             err = vkCreateBuffer(device, bufferInfo, allocator, lb).vkr
             checkVkResult(err)
             uploadBuffer = VkBuffer(lb[0])
 
             val req = VkMemoryRequirements.callocStack(stack)
-            vkGetBufferMemoryRequirements(device, uploadBuffer.L, req)
+            vkGetBufferMemoryRequirements(device, uploadBuffer, req)
 
             bufferMemoryAlignment = if (bufferMemoryAlignment.L > req.alignment.L) bufferMemoryAlignment else req.alignment
 
-            val allocInfo = VkMemoryAllocateInfo.callocStack(stack)
-            allocInfo.sType(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO)
-            allocInfo.allocationSize = req.size
-            allocInfo.memoryTypeIndex = memoryType(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, req.memoryTypeBits)
+            val allocInfo = vk.MemoryAllocateInfo {
+                allocationSize = req.size
+                memoryTypeIndex = memoryType(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, req.memoryTypeBits)
+            }
             err = vkAllocateMemory(device, allocInfo, allocator, lb).vkr
             checkVkResult(err)
             uploadBufferMemory = VkDeviceMemory(lb[0])
-            err = vkBindBufferMemory(device, uploadBuffer.L, uploadBufferMemory.L, 0).vkr
+            err = vkBindBufferMemory(device, uploadBuffer, uploadBufferMemory, 0).vkr
             checkVkResult(err)
         }
 
         stackPush().let { stack ->
             val pb = stack.mallocPointer(1)
-            err = vkMapMemory(device, uploadBufferMemory.L, 0, uploadSize.L, 0, pb).vkr
+            err = vkMapMemory(device, uploadBufferMemory, 0, uploadSize, 0, pb).vkr
             checkVkResult(err)
             pixels.copyTo(pb[0])
-            val range = VkMappedMemoryRange.callocStack(1, stack)
-            range[0].sType(VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE)
-            range[0].memory = uploadBufferMemory
-            range[0].size = uploadSize
+            val range = vk.MappedMemoryRange {
+                memory = uploadBufferMemory
+                size = uploadSize
+            }
             err = vkFlushMappedMemoryRanges(device, range).vkr
             checkVkResult(err)
             vkUnmapMemory(device, pb[0])
         }
 
         stackPush().let { stack ->
-            val copyBarrier = VkImageMemoryBarrier.callocStack(1, stack)
-            copyBarrier[0].sType(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
-            copyBarrier[0].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
-            copyBarrier[0].oldLayout = VkImageLayout.UNDEFINED
-            copyBarrier[0].newLayout = VkImageLayout.TRANSFER_DST_OPTIMAL
-            copyBarrier[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
-            copyBarrier[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
-            copyBarrier[0].image = fontImage
-            copyBarrier[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
-            copyBarrier[0].subresourceRange.levelCount = 1
-            copyBarrier[0].subresourceRange.layerCount = 1
-            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, null, copyBarrier)
+            val copyBarrier = vk.ImageMemoryBarrier {
+                dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
+                oldLayout = VkImageLayout.UNDEFINED
+                newLayout = VkImageLayout.TRANSFER_DST_OPTIMAL
+                srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
+                dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
+                image = fontImage
+                subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
+                subresourceRange.levelCount = 1
+                subresourceRange.layerCount = 1
+            }
+            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, null, VkImageMemoryBarrier.callocStack(1).put(0, copyBarrier))
 
-            val region = VkBufferImageCopy.callocStack(1, stack)
-            region[0].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
-            region[0].imageSubresource.layerCount = 1
-            region[0].imageExtent.width = size.x
-            region[0].imageExtent.height = size.y
-            region[0].imageExtent.depth = 1
-            vkCmdCopyBufferToImage(commandBuffer, uploadBuffer.L, fontImage.L, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region)
+            val region = vk.BufferImageCopy {
+                imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
+                imageSubresource.layerCount = 1
+                imageExtent.width = fontImageSize.x
+                imageExtent.height = fontImageSize.y
+                imageExtent.depth = 1
+            }
+            vkCmdCopyBufferToImage(commandBuffer, uploadBuffer, fontImage, VkImageLayout.TRANSFER_DST_OPTIMAL, VkBufferImageCopy.callocStack(1).put(0, region))
 
-            val useBarrier = VkImageMemoryBarrier.callocStack(1, stack)
-            useBarrier[0].sType(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
-            useBarrier[0].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
-            useBarrier[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT
-            useBarrier[0].oldLayout = VkImageLayout.TRANSFER_DST_OPTIMAL
-            useBarrier[0].newLayout = VkImageLayout.SHADER_READ_ONLY_OPTIMAL
-            useBarrier[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
-            useBarrier[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
-            useBarrier[0].image = fontImage
-            useBarrier[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
-            useBarrier[0].subresourceRange.levelCount = 1
-            useBarrier[0].subresourceRange.layerCount = 1
-            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, null, null, useBarrier)
+            val useBarrier = vk.ImageMemoryBarrier {
+                srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
+                dstAccessMask = VK_ACCESS_SHADER_READ_BIT
+                oldLayout = VkImageLayout.TRANSFER_DST_OPTIMAL
+                newLayout = VkImageLayout.SHADER_READ_ONLY_OPTIMAL
+                srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
+                dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
+                image = fontImage
+                subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
+                subresourceRange.levelCount = 1
+                subresourceRange.layerCount = 1
+            }
+            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, null, null, VkImageMemoryBarrier.callocStack(1).put(0, useBarrier))
         }
 
         io.fonts.texId = fontImage.L.i
@@ -570,10 +575,10 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
 
         stackPush().let { stack ->
             val pb = stack.mallocPointer(1)
-            err = vkMapMemory(device, fd.vertexBufferMemory.L, 0, vertex_size.L, 0, pb).vkr
+            err = vkMapMemory(device, fd.vertexBufferMemory, 0, VkDeviceSize(vertex_size.L), 0, pb).vkr
             checkVkResult(err)
             val vtxDst = MemoryUtil.memByteBuffer(pb[0], vertex_size)
-            err = vkMapMemory(device, fd.indexBufferMemory.L, 0, index_size.L, 0, pb).vkr
+            err = vkMapMemory(device, fd.indexBufferMemory, 0, VkDeviceSize(index_size.L), 0, pb).vkr
             checkVkResult(err)
             val idxDst = MemoryUtil.memByteBuffer(pb[0], index_size)
             var vtxOff = 0
@@ -599,18 +604,18 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
             range[1].size = VkDeviceSize(0)
             err = vkFlushMappedMemoryRanges(device, range).vkr
             checkVkResult(err)
-            vkUnmapMemory(device, fd.vertexBufferMemory.L)
-            vkUnmapMemory(device, fd.indexBufferMemory.L)
+            vkUnmapMemory(device, fd.vertexBufferMemory)
+            vkUnmapMemory(device, fd.indexBufferMemory)
         }
 
         run {
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.L)
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout.L, 0, longArrayOf(descriptorSet.L), null)
+            vkCmdBindPipeline(commandBuffer, VkPipelineBindPoint.GRAPHICS, pipeline)
+            vkCmdBindDescriptorSets(commandBuffer, VkPipelineBindPoint.GRAPHICS, pipelineLayout, 0, descriptorSet, null as IntArray?)
         }
 
         run {
-            vkCmdBindVertexBuffers(commandBuffer, 0, longArrayOf(fd.vertexBuffer.L), longArrayOf(0))
-            vkCmdBindIndexBuffer(commandBuffer, fd.indexBuffer.L, 0, VK_INDEX_TYPE_UINT16)
+            vkCmdBindVertexBuffers(commandBuffer, 0, fd.vertexBuffer, VkDeviceSize(0))
+            vkCmdBindIndexBuffer(commandBuffer, fd.indexBuffer, VkDeviceSize(0L), VkIndexType.UINT16)
         }
 
         stackPush().let { stack ->
@@ -631,8 +636,8 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
             val translate = FloatArray(2)
             translate[0] = -1.0f - drawData.displayPos.x * scale[0]
             translate[1] = -1.0f - drawData.displayPos.y * scale[1]
-            vkCmdPushConstants(commandBuffer, pipelineLayout.L, VK_SHADER_STAGE_VERTEX_BIT, Float.BYTES * 0, scale)
-            vkCmdPushConstants(commandBuffer, pipelineLayout.L, VK_SHADER_STAGE_VERTEX_BIT, Float.BYTES * 2, translate)
+            vkCmdPushConstants(commandBuffer, pipelineLayout, VkShaderStage.VERTEX_BIT.i, Float.BYTES * 0, scale)
+            vkCmdPushConstants(commandBuffer, pipelineLayout, VkShaderStage.VERTEX_BIT.i, Float.BYTES * 2, translate)
         }
 
         val clip_off = drawData.displayPos         // (0,0) unless using multi-viewports
@@ -675,11 +680,11 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
 
     private fun destroyFontObjects() {
         if (uploadBuffer.isValid) {
-            vkDestroyBuffer(device, uploadBuffer.L, allocator)
+            vkDestroyBuffer(device, uploadBuffer, allocator)
             uploadBuffer = VkBuffer.NULL
         }
         if (uploadBufferMemory.isValid) {
-            vkFreeMemory(device, uploadBufferMemory.L, allocator)
+            vkFreeMemory(device, uploadBufferMemory, allocator)
             uploadBufferMemory = VkDeviceMemory.NULL
         }
     }
@@ -689,68 +694,64 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
 
         for (fd in framesDataBuffers) {
             if (fd.vertexBuffer.isValid) {
-                vkDestroyBuffer(device, fd.vertexBuffer.L, allocator)
+                vkDestroyBuffer(device, fd.vertexBuffer, allocator)
                 fd.vertexBuffer = VkBuffer.NULL
             }
             if (fd.vertexBufferMemory.isValid) {
-                vkFreeMemory(device, fd.vertexBufferMemory.L, allocator)
+                vkFreeMemory(device, fd.vertexBufferMemory, allocator)
                 fd.vertexBufferMemory = VkDeviceMemory.NULL
             }
 
             if (fd.indexBuffer.isValid) {
-                vkDestroyBuffer(device, fd.indexBuffer.L, allocator)
+                vkDestroyBuffer(device, fd.indexBuffer, allocator)
                 fd.indexBuffer = VkBuffer.NULL
             }
             if (fd.indexBufferMemory.isValid) {
-                vkFreeMemory(device, fd.indexBufferMemory.L, allocator)
+                vkFreeMemory(device, fd.indexBufferMemory, allocator)
                 fd.indexBufferMemory = VkDeviceMemory.NULL
             }
         }
 
         if (fontView.isValid) {
-            vkDestroyImageView(device, fontView.L, allocator)
+            vkDestroyImageView(device, fontView, allocator)
             fontView = VkImageView.NULL
         }
 
         if (fontImage.isValid) {
-            vkDestroyImage(device, fontImage.L, allocator)
+            vkDestroyImage(device, fontImage, allocator)
             fontImage = VkImage.NULL
         }
 
         if (fontMemory.isValid) {
-            vkFreeMemory(device, fontMemory.L, allocator)
+            vkFreeMemory(device, fontMemory, allocator)
             fontMemory = VkDeviceMemory.NULL
         }
 
         if (fontSampler.isValid) {
-            vkDestroySampler(device, fontSampler.L, allocator)
+            vkDestroySampler(device, fontSampler, allocator)
             fontSampler = VkSampler.NULL
         }
 
         if (descriptorSetLayout.isValid) {
-            vkDestroyDescriptorSetLayout(device, descriptorSetLayout.L, allocator)
+            vkDestroyDescriptorSetLayout(device, descriptorSetLayout, allocator)
             descriptorSetLayout = VkDescriptorSetLayout.NULL
         }
 
         if (pipelineLayout.isValid) {
-            vkDestroyPipelineLayout(device, pipelineLayout.L, allocator)
+            vkDestroyPipelineLayout(device, pipelineLayout, allocator)
             pipelineLayout = VkPipelineLayout.NULL
         }
 
         if (pipeline.isValid) {
-            vkDestroyPipeline(device, pipeline.L, allocator)
+            vkDestroyPipeline(device, pipeline, allocator)
             pipeline = VkPipeline.NULL
         }
     }
 
     fun memoryType(properties: VkMemoryPropertyFlags, typeBits: Int): Int {
-        stackPush().let { stack ->
-            val props = VkPhysicalDeviceMemoryProperties.callocStack(stack)
-            vkGetPhysicalDeviceMemoryProperties(physicalDevice, props)
-            for (i in 0 until props.memoryTypeCount()) {
-                if ((props.memoryTypes(i).propertyFlags() and properties) == properties && (typeBits and (1 shl i)) != 0)
-                    return i
-            }
+        for (i in 0 until physicalDevice.memoryProperties.memoryTypeCount()) {
+            if ((physicalDevice.memoryProperties.memoryTypes(i).propertyFlags() and properties) == properties && (typeBits and (1 shl i)) != 0)
+                return i
         }
         return -1
     }
@@ -759,38 +760,38 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
         var err: VkResult
 
         if (buffer.isValid)
-            vkDestroyBuffer(device, buffer.L, allocator)
+            vkDestroyBuffer(device, buffer, allocator)
         if (bufferMemory.isValid)
-            vkFreeMemory(device, bufferMemory.L, allocator)
+            vkFreeMemory(device, bufferMemory, allocator)
 
         val retBuffer: VkBuffer
         val retMem: VkDeviceMemory
 
         val vertexBufferSizeAligned = VkDeviceSize(((newSize.L - 1) / bufferMemoryAlignment.L + 1) * bufferMemoryAlignment.L)
         stackPush().let { stack ->
-            val bufferInfo = VkBufferCreateInfo.callocStack(stack)
-            bufferInfo.sType(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO)
-            bufferInfo.size(vertexBufferSizeAligned.L)
-            bufferInfo.usage(usage)
-            bufferInfo.sharingMode(VK_SHARING_MODE_EXCLUSIVE)
+            val bufferInfo = vk.BufferCreateInfo {
+                size = vertexBufferSizeAligned
+                this.usage = usage
+                sharingMode = VkSharingMode.EXCLUSIVE
+            }
             val lb = stack.mallocLong(1)
             err = vkCreateBuffer(device, bufferInfo, allocator, lb).vkr
             checkVkResult(err)
             retBuffer = VkBuffer(lb[0])
 
             val req = VkMemoryRequirements.mallocStack(stack)
-            vkGetBufferMemoryRequirements(device, retBuffer.L, req)
+            vkGetBufferMemoryRequirements(device, retBuffer, req)
             bufferMemoryAlignment = if (bufferMemoryAlignment.L > req.alignment.L) bufferMemoryAlignment else req.alignment
-            val allocInfo = VkMemoryAllocateInfo.callocStack(stack)
-            allocInfo.sType(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO)
-            allocInfo.allocationSize(req.size())
-            allocInfo.memoryTypeIndex(memoryType(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, req.memoryTypeBits))
+            val allocInfo = vk.MemoryAllocateInfo {
+                allocationSize = VkDeviceSize(req.size())
+                memoryTypeIndex = memoryType(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, req.memoryTypeBits)
+            }
             err = vkAllocateMemory(device, allocInfo, allocator, lb).vkr
             checkVkResult(err)
             retMem = VkDeviceMemory(lb[0])
         }
 
-        err = vkBindBufferMemory(device, retBuffer.L, retMem.L, 0).vkr
+        err = vkBindBufferMemory(device, retBuffer, retMem, 0).vkr
         checkVkResult(err)
 
         return Triple(retBuffer, retMem, newSize)
@@ -859,43 +860,39 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
         stackPush().let { stack ->
             val lb = stack.mallocLong(1)
             val pb = stack.mallocPointer(1)
-            val ib = stack.mallocInt(1)
             for (i in 0 until IMGUI_VK_QUEUED_FRAMES) {
                 val fd = wd.frames[i]
 
                 run {
-                    val info = VkCommandPoolCreateInfo.callocStack(stack)
-                    info.sType(VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO)
-                    info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
-                    info.queueFamilyIndex = queueFamily
+                    val info = vk.CommandPoolCreateInfo {
+                        flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+                        queueFamilyIndex = queueFamily
+                    }
                     err = vkCreateCommandPool(device, info, allocator, lb).vkr
                     checkVkResult(err)
                     fd.commandPool = VkCommandPool(lb[0])
                 }
 
                 run {
-                    val info = VkCommandBufferAllocateInfo.callocStack(stack)
-                    info.sType(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO)
-                    info.commandPool = fd.commandPool
-                    info.level = VkCommandBufferLevel.PRIMARY
-                    info.commandBufferCount = 1
+                    val info = vk.CommandBufferAllocateInfo {
+                        commandPool = fd.commandPool
+                        level = VkCommandBufferLevel.PRIMARY
+                        commandBufferCount = 1
+                    }
                     err = vkAllocateCommandBuffers(device, info, pb).vkr
                     checkVkResult(err)
                     fd.commandBuffer = VkCommandBuffer(pb[0], device)
                 }
 
                 run {
-                    val info = VkFenceCreateInfo.callocStack(stack)
-                    info.sType(VK_STRUCTURE_TYPE_FENCE_CREATE_INFO)
-                    info.flags = VK_FENCE_CREATE_SIGNALED_BIT
+                    val info = vk.FenceCreateInfo(VkFenceCreate.SIGNALED_BIT)
                     err = vkCreateFence(device, info, allocator, lb).vkr
                     checkVkResult(err)
                     fd.fence = VkFence(lb[0])
                 }
 
                 run {
-                    val info = VkSemaphoreCreateInfo.callocStack(stack)
-                    info.sType(VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO)
+                    val info = vk.SemaphoreCreateInfo{}
                     err = vkCreateSemaphore(device, info, allocator, lb).vkr
                     checkVkResult(err)
                     fd.imageAcquiredSemaphore = VkSemaphore(lb[0])
@@ -912,19 +909,19 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
 
         for (i in 0 until IMGUI_VK_QUEUED_FRAMES) {
             val fd = wd.frames[0]
-            vkDestroyFence(device, fd.fence.L, allocator)
-            vkFreeCommandBuffers(device, fd.commandPool.L, fd.commandBuffer)
-            vkDestroyCommandPool(device, fd.commandPool.L, allocator)
-            vkDestroySemaphore(device, fd.imageAcquiredSemaphore.L, allocator)
-            vkDestroySemaphore(device, fd.renderCompleteSemaphore.L, allocator)
+            vkDestroyFence(device, fd.fence, allocator)
+            vkFreeCommandBuffers(device, fd.commandPool, fd.commandBuffer)
+            vkDestroyCommandPool(device, fd.commandPool, allocator)
+            vkDestroySemaphore(device, fd.imageAcquiredSemaphore, allocator)
+            vkDestroySemaphore(device, fd.renderCompleteSemaphore, allocator)
         }
 
         for (i in 0 until wd.backbufferCount) {
-            vkDestroyImageView(device, wd.backBufferView[i].L, allocator)
-            vkDestroyFramebuffer(device, wd.framebuffer[i].L, allocator)
+            vkDestroyImageView(device, wd.backBufferView[i], allocator)
+            vkDestroyFramebuffer(device, wd.framebuffer[i], allocator)
         }
 
-        vkDestroyRenderPass(device, wd.renderPass.L, allocator)
+        vkDestroyRenderPass(device, wd.renderPass, allocator)
         vkDestroySwapchainKHR(device, wd.swapchain.L, allocator)
         vkDestroySurfaceKHR(instance, wd.surface.L, allocator)
 
@@ -934,40 +931,40 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
         var minImageCount = 2
 
         val oldSwapchain = wd.swapchain
-        var err = vkDeviceWaitIdle(device).vkr
+        var err = device.waitIdle()
         checkVkResult(err)
 
         for (i in 0 until wd.backbufferCount) {
             if (wd.backBufferView[i].isValid)
-                vkDestroyImageView(device, wd.backBufferView[i].L, allocator)
+                vkDestroyImageView(device, wd.backBufferView[i], allocator)
             if (wd.framebuffer[i].isValid)
-                vkDestroyFramebuffer(device, wd.framebuffer[i].L, allocator)
+                vkDestroyFramebuffer(device, wd.framebuffer[i], allocator)
         }
         wd.backbufferCount = 0
         if (wd.renderPass.isValid)
-            vkDestroyRenderPass(device, wd.renderPass.L, allocator)
+            vkDestroyRenderPass(device, wd.renderPass, allocator)
 
         if (minImageCount == 0)
             minImageCount = getMinImageCountFromPresentMode(wd.presentMode)
 
         stackPush().let { stack ->
-            val info = VkSwapchainCreateInfoKHR.callocStack(stack)
-            info.sType(VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR)
-            info.surface = wd.surface
-            info.minImageCount = minImageCount
-            info.imageFormat = wd.surfaceFormat.format
-            info.imageColorSpace = wd.surfaceFormat.colorSpace
-            info.imageArrayLayers = 1
-            info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-            info.imageSharingMode = VkSharingMode.EXCLUSIVE           // Assume that graphics family == present family
-            info.preTransform = VkSurfaceTransformKHR.IDENTITY_BIT_KHR
-            info.compositeAlpha = VkCompositeAlphaKHR.OPAQUE_BIT_KHR
-            info.presentMode = wd.presentMode
-            info.clipped = true
-            info.oldSwapchain = oldSwapchain
+            val info = vk.SwapchainCreateInfoKHR {
+                surface = wd.surface
+                this.minImageCount = minImageCount
+                imageFormat = wd.surfaceFormat.format
+                imageColorSpace = wd.surfaceFormat.colorSpace
+                imageArrayLayers = 1
+                imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                imageSharingMode = VkSharingMode.EXCLUSIVE           // Assume that graphics family == present family
+                preTransform = VkSurfaceTransformKHR.IDENTITY_BIT_KHR
+                compositeAlpha = VkCompositeAlphaKHR.OPAQUE_BIT_KHR
+                presentMode = wd.presentMode
+                clipped = true
+                this.oldSwapchain = oldSwapchain
+            }
 
-            val cap = VkSurfaceCapabilitiesKHR.callocStack(stack)
-            err = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, wd.surface.L, cap).vkr
+            val cap = vk.SurfaceCapabilitiesKHR{}
+            err = physicalDevice.getSurfaceCapabilitiesKHR(wd.surface, cap)
             checkVkResult(err)
             if (info.minImageCount < cap.minImageCount)
                 info.minImageCount = cap.minImageCount
@@ -1004,51 +1001,53 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
 
         stackPush().let { stack ->
             val lb = stack.mallocLong(1)
-            val attachment = VkAttachmentDescription.callocStack(stack)
-            attachment.format = wd.surfaceFormat.format
-            attachment.samples = VkSampleCount._1_BIT
-            attachment.loadOp = if (wd.clearEnable) VkAttachmentLoadOp.CLEAR else VkAttachmentLoadOp.DONT_CARE
-            attachment.storeOp = VkAttachmentStoreOp.STORE
-            attachment.stencilLoadOp = VkAttachmentLoadOp.DONT_CARE
-            attachment.stencilStoreOp = VkAttachmentStoreOp.DONT_CARE
-            attachment.initialLayout = VkImageLayout.UNDEFINED
-            attachment.finalLayout = VkImageLayout.PRESENT_SRC_KHR
-            val colorAttachment = VkAttachmentReference.callocStack(stack)
-            colorAttachment.attachment = 0
-            colorAttachment.layout = VkImageLayout.COLOR_ATTACHMENT_OPTIMAL
-            val subpass = VkSubpassDescription.callocStack(stack)
-            subpass.pipelineBindPoint = VkPipelineBindPoint.GRAPHICS
-            subpass.colorAttachmentCount = 1
-            subpass.colorAttachment = colorAttachment
-            val dependency = VkSubpassDependency.callocStack(stack)
-            dependency.srcSubpass = VK_SUBPASS_EXTERNAL
-            dependency.dstSubpass = 0
-            dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-            dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-            dependency.srcAccessMask = 0
-            dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
-            val info = VkRenderPassCreateInfo.callocStack(stack)
-            info.sType(VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO)
-            info.attachment = attachment
-            info.subpass = subpass
-            info.dependency = dependency
+            val attachment = vk.AttachmentDescription {
+                format = wd.surfaceFormat.format
+                samples = VkSampleCount._1_BIT
+                loadOp = if (wd.clearEnable) VkAttachmentLoadOp.CLEAR else VkAttachmentLoadOp.DONT_CARE
+                storeOp = VkAttachmentStoreOp.STORE
+                stencilLoadOp = VkAttachmentLoadOp.DONT_CARE
+                stencilStoreOp = VkAttachmentStoreOp.DONT_CARE
+                initialLayout = VkImageLayout.UNDEFINED
+                finalLayout = VkImageLayout.PRESENT_SRC_KHR
+            }
+            val colorAttachment = vk.AttachmentReference {
+                this.attachment = 0
+                layout = VkImageLayout.COLOR_ATTACHMENT_OPTIMAL
+            }
+            val subpass = vk.SubpassDescription {
+                pipelineBindPoint = VkPipelineBindPoint.GRAPHICS
+                colorAttachmentCount = 1
+                this.colorAttachment = colorAttachment
+            }
+            val dependency = vk.SubpassDependency {
+                srcSubpass = VK_SUBPASS_EXTERNAL
+                dstSubpass = 0
+                srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                srcAccessMask = 0
+                dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+            }
+            val info = vk.RenderPassCreateInfo {
+                this.attachment = attachment
+                this.subpass = subpass
+                this.dependency = dependency
+            }
             err = vkCreateRenderPass(device, info, allocator, lb).vkr
             checkVkResult(err)
         }
 
         stackPush().let { stack ->
             val lb = stack.mallocLong(1)
-            val info = VkImageViewCreateInfo.callocStack(stack)
-            info.sType(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO)
-            info.viewType = VkImageViewType._2D
-            info.format = wd.surfaceFormat.format
-            info.components.r = VkComponentSwizzle.R
-            info.components.g = VkComponentSwizzle.G
-            info.components.b = VkComponentSwizzle.B
-            info.components.a = VkComponentSwizzle.A
-            val imageRange = VkImageSubresourceRange.callocStack(stack)
-            imageRange.set(VkImageAspect.COLOR_BIT.i, 0, 1, 0, 1)
-            info.subresourceRange = imageRange
+            val info = vk.ImageViewCreateInfo {
+                viewType = VkImageViewType._2D
+                format = wd.surfaceFormat.format
+                components.r = VkComponentSwizzle.R
+                components.g = VkComponentSwizzle.G
+                components.b = VkComponentSwizzle.B
+                components.a = VkComponentSwizzle.A
+                subresourceRange = vk.ImageSubresourceRange(VkImageAspect.COLOR_BIT.i, 0, 1, 0, 1)
+            }
             for (i in 0 until wd.backbufferCount) {
                 info.image = wd.backBuffer[i]
                 err = vkCreateImageView(device, info, allocator, lb).vkr
@@ -1060,13 +1059,13 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val renderPass: VkRenderPass) : 
         stackPush().let { stack ->
             val lb = stack.mallocLong(1)
             var attachment = VkImageView.NULL
-            val info = VkFramebufferCreateInfo.callocStack(stack)
-            info.sType(VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO)
-            info.renderPass = wd.renderPass
-            info.attachment = attachment
-            info.width = wd.width
-            info.height = wd.height
-            info.layers = 1
+            val info = vk.FramebufferCreateInfo {
+                renderPass = wd.renderPass
+                this.attachment = attachment
+                width = wd.width
+                height = wd.height
+                layers = 1
+            }
             for (i in 0 until wd.backbufferCount) {
                 attachment = wd.backBufferView[i]
                 err = vkCreateFramebuffer(device, info, allocator, lb).vkr

@@ -25,6 +25,8 @@ dependencies {
 
     implementation 'com.github.kotlin-graphics:uno-sdk:60edf33067835253aa30ac79bd5129363fee953f'
 
+    implementation 'com.github.kotlin-graphics:vkk:0b1755631d'
+
     testImplementation "io.kotlintest:kotlintest-runner-junit5:$kotlintest_version".toString()
 
     def joglVersion = '2.3.2'
