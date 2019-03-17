@@ -1,11 +1,14 @@
 package imgui.impl
 
 import glm_.*
+import glm_.vec2.Vec2
 import glm_.vec4.Vec4
 import imgui.ImGui.io
 import imgui.DrawData
 import imgui.DrawIdx
 import imgui.DrawVert
+import kool.FloatBuffer
+import kool.set
 import kool.toBuffer
 import org.lwjgl.system.MemoryStack.stackPush
 import org.lwjgl.system.MemoryUtil
@@ -19,15 +22,9 @@ import org.lwjgl.vulkan.VK10.VK_COLOR_COMPONENT_A_BIT
 import org.lwjgl.vulkan.VK10.VK_COLOR_COMPONENT_B_BIT
 import org.lwjgl.vulkan.VK10.VK_COLOR_COMPONENT_G_BIT
 import org.lwjgl.vulkan.VK10.VK_COLOR_COMPONENT_R_BIT
-import org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO
 import org.lwjgl.vulkan.VK10.VK_IMAGE_USAGE_TRANSFER_DST_BIT
 import org.lwjgl.vulkan.VK10.VK_IMAGE_USAGE_SAMPLED_BIT
-import org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
-import org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
-import vkk.extensionFunctions.destroyImageView
-import vkk.extensionFunctions.getSurfaceCapabilitiesKHR
-import vkk.extensionFunctions.memoryProperties
-import vkk.extensionFunctions.waitIdle
+import vkk.extensionFunctions.*
 
 
 /** glsl_shader.vert, compiled with:
@@ -420,8 +417,7 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
             checkVkResult(err)
             fontImage = VkImage(lb[0])
 
-            val req = VkMemoryRequirements.callocStack(stack)
-            vkGetImageMemoryRequirements(device, fontImage, req)
+            val req = device getImageMemoryRequirements fontImage
 
             val allocInfo = vk.MemoryAllocateInfo {
                 allocationSize = req.size
@@ -462,7 +458,7 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
                 imageInfo = descImage
             }
 
-            vkUpdateDescriptorSets(device, VkWriteDescriptorSet.callocStack(1).put(0, writeDesc), null)
+            device.updateDescriptorSets(writeDesc)
         }
 
         stackPush().let { stack ->
@@ -476,8 +472,7 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
             checkVkResult(err)
             uploadBuffer = VkBuffer(lb[0])
 
-            val req = VkMemoryRequirements.callocStack(stack)
-            vkGetBufferMemoryRequirements(device, uploadBuffer, req)
+            val req = device.getBufferMemoryRequirements(uploadBuffer)
 
             bufferMemoryAlignment = if (bufferMemoryAlignment.L > req.alignment.L) bufferMemoryAlignment else req.alignment
 
@@ -503,7 +498,7 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
             }
             err = vkFlushMappedMemoryRanges(device, range).vkr
             checkVkResult(err)
-            vkUnmapMemory(device, pb[0])
+            device.unmapMemory(VkDeviceMemory(pb[0]))
         }
 
         stackPush().let { stack ->
@@ -518,7 +513,7 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
                 subresourceRange.levelCount = 1
                 subresourceRange.layerCount = 1
             }
-            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, null, VkImageMemoryBarrier.callocStack(1).put(0, copyBarrier))
+            commandBuffer.pipelineBarrier(VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, null, copyBarrier)
 
             val region = vk.BufferImageCopy {
                 imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
@@ -527,7 +522,7 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
                 imageExtent.height = fontImageSize.y
                 imageExtent.depth = 1
             }
-            vkCmdCopyBufferToImage(commandBuffer, uploadBuffer, fontImage, VkImageLayout.TRANSFER_DST_OPTIMAL, VkBufferImageCopy.callocStack(1).put(0, region))
+            commandBuffer.copyBufferToImage(uploadBuffer, fontImage, VkImageLayout.TRANSFER_DST_OPTIMAL, region)
 
             val useBarrier = vk.ImageMemoryBarrier {
                 srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
@@ -541,7 +536,7 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
                 subresourceRange.levelCount = 1
                 subresourceRange.layerCount = 1
             }
-            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, null, null, VkImageMemoryBarrier.callocStack(1).put(0, useBarrier))
+            commandBuffer.pipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, null, null, useBarrier)
         }
 
         io.fonts.texId = fontImage.L.i
@@ -604,77 +599,78 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
             range[1].size = VkDeviceSize(0)
             err = vkFlushMappedMemoryRanges(device, range).vkr
             checkVkResult(err)
-            vkUnmapMemory(device, fd.vertexBufferMemory)
-            vkUnmapMemory(device, fd.indexBufferMemory)
+            device.unmapMemory(fd.vertexBufferMemory)
+            device.unmapMemory(fd.indexBufferMemory)
         }
 
         run {
-            vkCmdBindPipeline(commandBuffer, VkPipelineBindPoint.GRAPHICS, pipeline)
-            vkCmdBindDescriptorSets(commandBuffer, VkPipelineBindPoint.GRAPHICS, pipelineLayout, 0, descriptorSet, null as IntArray?)
+            commandBuffer.bindPipeline(VkPipelineBindPoint.GRAPHICS, pipeline)
+            commandBuffer.bindDescriptorSets(VkPipelineBindPoint.GRAPHICS, pipelineLayout, descriptorSet)
         }
 
         run {
-            vkCmdBindVertexBuffers(commandBuffer, 0, fd.vertexBuffer, VkDeviceSize(0))
-            vkCmdBindIndexBuffer(commandBuffer, fd.indexBuffer, VkDeviceSize(0L), VkIndexType.UINT16)
+            commandBuffer.bindVertexBuffers(0, fd.vertexBuffer, VkDeviceSize(0))
+            commandBuffer.bindIndexBuffer(fd.indexBuffer, VkDeviceSize(0L), VkIndexType.UINT32) //TODO: Check
         }
 
         stackPush().let { stack ->
-            val viewport = VkViewport.callocStack(1, stack)
-            viewport[0].x = 0.0f
-            viewport[0].y = 0.0f
-            viewport[0].width = fbWidth.f
-            viewport[0].height = fbHeight.f
-            viewport[0].minDepth = 0.0f
-            viewport[0].maxDepth = 1.0f
-            vkCmdSetViewport(commandBuffer, 0, viewport)
+            val viewport = vk.Viewport {
+                x = 0.0f
+                y = 0.0f
+                width = fbWidth.f
+                height = fbHeight.f
+                minDepth = 0.0f
+                maxDepth = 1.0f
+            }
+            commandBuffer.setViewport(viewport)
         }
 
         run {
-            val scale = FloatArray(2)
+            val scale = FloatBuffer(2)
             scale[0] = 2.0f / drawData.displaySize.x
             scale[1] = 2.0f / drawData.displaySize.y
-            val translate = FloatArray(2)
+            val translate = FloatBuffer(2)
             translate[0] = -1.0f - drawData.displayPos.x * scale[0]
             translate[1] = -1.0f - drawData.displayPos.y * scale[1]
-            vkCmdPushConstants(commandBuffer, pipelineLayout, VkShaderStage.VERTEX_BIT.i, Float.BYTES * 0, scale)
-            vkCmdPushConstants(commandBuffer, pipelineLayout, VkShaderStage.VERTEX_BIT.i, Float.BYTES * 2, translate)
+            commandBuffer.pushConstants(pipelineLayout, VkShaderStage.VERTEX_BIT.i, Float.BYTES * 0, scale)
+            commandBuffer.pushConstants(pipelineLayout, VkShaderStage.VERTEX_BIT.i, Float.BYTES * 2, translate)
         }
 
-        val clip_off = drawData.displayPos         // (0,0) unless using multi-viewports
-        val clip_scale = drawData.framebufferScale // (1,1) unless using retina display which are often (2,2)
+        val clipOff = drawData.displayPos         // (0,0) unless using multi-viewports
+        val clipScale = drawData.framebufferScale // (1,1) unless using retina display which are often (2,2)
 
         // Render command lists
-        var vtx_offset = 0
-        var idx_offset = 0
-        for (cmd_list in drawData.cmdLists) {
-            for (pcmd in cmd_list.cmdBuffer) {
+        var vtxOffset = 0
+        var idxOffset = 0
+        for (cmdList in drawData.cmdLists) {
+            for (pcmd in cmdList.cmdBuffer) {
                 if (pcmd.userCallback != null) {
-                    pcmd.userCallback!!.invoke(cmd_list, pcmd)
+                    pcmd.userCallback!!.invoke(cmdList, pcmd)
                 } else {
                     // Project scissor/clipping rectangles into framebuffer space
-                    val clip_rect = Vec4(
-                            (pcmd.clipRect.x - clip_off.x) * clip_scale.x,
-                            (pcmd.clipRect.y - clip_off.y) * clip_scale.y,
-                            (pcmd.clipRect.z - clip_off.x) * clip_scale.x,
-                            (pcmd.clipRect.w - clip_off.y) * clip_scale.y
+                    val clipRect = Vec4(
+                            (pcmd.clipRect.x - clipOff.x) * clipScale.x,
+                            (pcmd.clipRect.y - clipOff.y) * clipScale.y,
+                            (pcmd.clipRect.z - clipOff.x) * clipScale.x,
+                            (pcmd.clipRect.w - clipOff.y) * clipScale.y
                     )
 
-                    if (clip_rect.x < fbWidth && clip_rect.y < fbHeight && clip_rect.z >= 0.0f && clip_rect.w >= 0.0f) {
+                    if (clipRect.x < fbWidth && clipRect.y < fbHeight && clipRect.z >= 0.0f && clipRect.w >= 0.0f) {
                         // Apply scissor/clipping rectangle
                         val scissor = VkRect2D.callocStack(1)
-                        scissor[0].offset.x = clip_rect.x.i
-                        scissor[0].offset.y = clip_rect.y.i
-                        scissor[0].extent.width = (clip_rect.z - clip_rect.x).i
-                        scissor[0].extent.height = (clip_rect.w - clip_rect.y).i
-                        vkCmdSetScissor(commandBuffer, 0, scissor)
+                        scissor[0].offset.x = clipRect.x.i
+                        scissor[0].offset.y = clipRect.y.i
+                        scissor[0].extent.width = (clipRect.z - clipRect.x).i
+                        scissor[0].extent.height = (clipRect.w - clipRect.y).i
+                        commandBuffer.setScissor(0, scissor)
 
                         // Draw
-                        vkCmdDrawIndexed(commandBuffer, pcmd.elemCount, 1, idx_offset, vtx_offset, 0)
+                        commandBuffer.drawIndexed(pcmd.elemCount, 1, idxOffset, vtxOffset, 0)
                     }
                 }
-                idx_offset += pcmd.elemCount
+                idxOffset += pcmd.elemCount
             }
-            vtx_offset += cmd_list.vtxBuffer.size
+            vtxOffset += cmdList.vtxBuffer.size
         }
     }
 
@@ -779,8 +775,7 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
             checkVkResult(err)
             retBuffer = VkBuffer(lb[0])
 
-            val req = VkMemoryRequirements.mallocStack(stack)
-            vkGetBufferMemoryRequirements(device, retBuffer, req)
+            val req = device.getBufferMemoryRequirements(retBuffer)
             bufferMemoryAlignment = if (bufferMemoryAlignment.L > req.alignment.L) bufferMemoryAlignment else req.alignment
             val allocInfo = vk.MemoryAllocateInfo {
                 allocationSize = VkDeviceSize(req.size())
@@ -812,12 +807,9 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
         assert(requestFormats.isNotEmpty())
 
         stackPush().let { stack ->
-            val ib = stack.mallocInt(1)
-            vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface.L, ib, null)
-            val surfaceFormats = VkSurfaceFormatKHR.callocStack(ib[0], stack)
-            vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface.L, ib, surfaceFormats)
+            val surfaceFormats = physicalDevice.getSurfaceFormatsKHR<VkSurfaceFormatKHR.Buffer>(surface)
 
-            if (ib[0] == 1) {
+            if (surfaceFormats.capacity() == 1) {
                 return if (surfaceFormats[0].format() == VK_FORMAT_UNDEFINED) {
                     val ret = VkSurfaceFormatKHR.calloc()
                     ret.format = requestFormats[0]
@@ -828,7 +820,7 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
                 }
             } else {
                 for (request_i in 0 until requestFormats.size)
-                    for (avail_i in 0 until ib[0])
+                    for (avail_i in 0 until surfaceFormats.capacity())
                         if (surfaceFormats[avail_i].format == requestFormats[request_i] && surfaceFormats[avail_i].colorSpace == requestColorSpace)
                             return surfaceFormats[avail_i]
                 return surfaceFormats[0]
@@ -836,18 +828,16 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
         }
     }
 
-    fun selectPresentMode(physicalDevice: VkPhysicalDevice, surface: VkSurfaceKHR, requestModes: Array<VkPresentModeKHR>): VkPresentModeKHR {
-        assert(requestModes.isNotEmpty())
+    fun selectPresentMode(physicalDevice: VkPhysicalDevice, surface: VkSurfaceKHR, requestModes: VkPresentModeKHR_Buffer): VkPresentModeKHR {
+        assert(requestModes.rem != 0)
 
         stackPush().let { stack ->
             val ib = stack.mallocInt(1)
-            vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface.L, ib, null)
-            val availModes = stack.mallocInt(ib[0])
-            vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface.L, ib, availModes)
+            val availModes = physicalDevice.getSurfacePresentModesKHR<VkPresentModeKHR_Buffer>(surface)
 
-            for (request_i in 0 until requestModes.size)
+            for (request_i in 0 until requestModes.rem)
                 for (avail_i in 0 until ib[0])
-                    if (requestModes[request_i].i == availModes[avail_i])
+                    if (requestModes[request_i] == availModes[avail_i])
                         return requestModes[request_i]
 
             return VkPresentModeKHR.FIFO_KHR
@@ -905,12 +895,12 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
     }
 
     private fun destroyWindowData(instance: VkInstance, device: VkDevice, wd: WindowData, allocator: VkAllocationCallbacks) {
-        vkDeviceWaitIdle(device)
+        device.waitIdle()
 
         for (i in 0 until IMGUI_VK_QUEUED_FRAMES) {
             val fd = wd.frames[0]
             vkDestroyFence(device, fd.fence, allocator)
-            vkFreeCommandBuffers(device, fd.commandPool, fd.commandBuffer)
+            device.freeCommandBuffer(fd.commandPool, fd.commandBuffer)
             vkDestroyCommandPool(device, fd.commandPool, allocator)
             vkDestroySemaphore(device, fd.imageAcquiredSemaphore, allocator)
             vkDestroySemaphore(device, fd.renderCompleteSemaphore, allocator)
@@ -931,7 +921,7 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
         var minImageCount = 2
 
         val oldSwapchain = wd.swapchain
-        var err = device.waitIdle()
+        var err = vkDeviceWaitIdle(device).vkr
         checkVkResult(err)
 
         for (i in 0 until wd.backbufferCount) {
