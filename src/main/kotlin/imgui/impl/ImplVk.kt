@@ -445,21 +445,19 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
             fontView = VkImageView(lb[0])
         }
 
-        stackPush().let { stack ->
-            val descImage = vk.DescriptorImageInfo {
-                sampler = fontSampler
-                imageView = fontView
-                imageLayout = VkImageLayout.SHADER_READ_ONLY_OPTIMAL
-            }
-
-            val writeDesc = vk.WriteDescriptorSet {
-                dstSet = descriptorSet
-                descriptorType = VkDescriptorType.COMBINED_IMAGE_SAMPLER
-                imageInfo = descImage
-            }
-
-            device.updateDescriptorSets(writeDesc)
+        val descImage = vk.DescriptorImageInfo {
+            sampler = fontSampler
+            imageView = fontView
+            imageLayout = VkImageLayout.SHADER_READ_ONLY_OPTIMAL
         }
+
+        val writeDesc = vk.WriteDescriptorSet {
+            dstSet = descriptorSet
+            descriptorType = VkDescriptorType.COMBINED_IMAGE_SAMPLER
+            imageInfo = descImage
+        }
+
+        device.updateDescriptorSets(writeDesc)
 
         stackPush().let { stack ->
             val lb = stack.mallocLong(1)
@@ -501,43 +499,41 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
             device.unmapMemory(VkDeviceMemory(pb[0]))
         }
 
-        stackPush().let { stack ->
-            val copyBarrier = vk.ImageMemoryBarrier {
-                dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
-                oldLayout = VkImageLayout.UNDEFINED
-                newLayout = VkImageLayout.TRANSFER_DST_OPTIMAL
-                srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
-                dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
-                image = fontImage
-                subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
-                subresourceRange.levelCount = 1
-                subresourceRange.layerCount = 1
-            }
-            commandBuffer.pipelineBarrier(VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, null, copyBarrier)
-
-            val region = vk.BufferImageCopy {
-                imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
-                imageSubresource.layerCount = 1
-                imageExtent.width = fontImageSize.x
-                imageExtent.height = fontImageSize.y
-                imageExtent.depth = 1
-            }
-            commandBuffer.copyBufferToImage(uploadBuffer, fontImage, VkImageLayout.TRANSFER_DST_OPTIMAL, region)
-
-            val useBarrier = vk.ImageMemoryBarrier {
-                srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
-                dstAccessMask = VK_ACCESS_SHADER_READ_BIT
-                oldLayout = VkImageLayout.TRANSFER_DST_OPTIMAL
-                newLayout = VkImageLayout.SHADER_READ_ONLY_OPTIMAL
-                srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
-                dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
-                image = fontImage
-                subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
-                subresourceRange.levelCount = 1
-                subresourceRange.layerCount = 1
-            }
-            commandBuffer.pipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, null, null, useBarrier)
+        val copyBarrier = vk.ImageMemoryBarrier {
+            dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
+            oldLayout = VkImageLayout.UNDEFINED
+            newLayout = VkImageLayout.TRANSFER_DST_OPTIMAL
+            srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
+            dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
+            image = fontImage
+            subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
+            subresourceRange.levelCount = 1
+            subresourceRange.layerCount = 1
         }
+        commandBuffer.pipelineBarrier(VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, null, copyBarrier)
+
+        val region = vk.BufferImageCopy {
+            imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
+            imageSubresource.layerCount = 1
+            imageExtent.width = fontImageSize.x
+            imageExtent.height = fontImageSize.y
+            imageExtent.depth = 1
+        }
+        commandBuffer.copyBufferToImage(uploadBuffer, fontImage, VkImageLayout.TRANSFER_DST_OPTIMAL, region)
+
+        val useBarrier = vk.ImageMemoryBarrier {
+            srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
+            dstAccessMask = VK_ACCESS_SHADER_READ_BIT
+            oldLayout = VkImageLayout.TRANSFER_DST_OPTIMAL
+            newLayout = VkImageLayout.SHADER_READ_ONLY_OPTIMAL
+            srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
+            dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
+            image = fontImage
+            subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT
+            subresourceRange.levelCount = 1
+            subresourceRange.layerCount = 1
+        }
+        commandBuffer.pipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, null, null, useBarrier)
 
         io.fonts.texId = fontImage.L.i
 
@@ -613,17 +609,15 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
             commandBuffer.bindIndexBuffer(fd.indexBuffer, VkDeviceSize(0L), VkIndexType.UINT32) //TODO: Check
         }
 
-        stackPush().let { stack ->
-            val viewport = vk.Viewport {
-                x = 0.0f
-                y = 0.0f
-                width = fbWidth.f
-                height = fbHeight.f
-                minDepth = 0.0f
-                maxDepth = 1.0f
-            }
-            commandBuffer.setViewport(viewport)
+        val viewport = vk.Viewport {
+            x = 0.0f
+            y = 0.0f
+            width = fbWidth.f
+            height = fbHeight.f
+            minDepth = 0.0f
+            maxDepth = 1.0f
         }
+        commandBuffer.setViewport(viewport)
 
         run {
             val scale = FloatBuffer(2)
@@ -657,12 +651,13 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
 
                     if (clipRect.x < fbWidth && clipRect.y < fbHeight && clipRect.z >= 0.0f && clipRect.w >= 0.0f) {
                         // Apply scissor/clipping rectangle
-                        val scissor = VkRect2D.callocStack(1)
-                        scissor[0].offset.x = clipRect.x.i
-                        scissor[0].offset.y = clipRect.y.i
-                        scissor[0].extent.width = (clipRect.z - clipRect.x).i
-                        scissor[0].extent.height = (clipRect.w - clipRect.y).i
-                        commandBuffer.setScissor(0, scissor)
+                        val scissor = vk.Rect2D {
+                            offset.x = clipRect.x.i
+                            offset.y = clipRect.y.i
+                            extent.width = (clipRect.z - clipRect.x).i
+                            extent.height = (clipRect.w - clipRect.y).i
+                        }
+                        commandBuffer.setScissor(scissor)
 
                         // Draw
                         commandBuffer.drawIndexed(pcmd.elemCount, 1, idxOffset, vtxOffset, 0)
@@ -806,25 +801,23 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
     fun selectSurfaceFormat(physicalDevice: VkPhysicalDevice, surface: VkSurfaceKHR, requestFormats: Array<VkFormat>, requestColorSpace: VkColorSpaceKHR): VkSurfaceFormatKHR {
         assert(requestFormats.isNotEmpty())
 
-        stackPush().let { stack ->
-            val surfaceFormats = physicalDevice.getSurfaceFormatsKHR<VkSurfaceFormatKHR.Buffer>(surface)
+        val surfaceFormats = physicalDevice.getSurfaceFormatsKHR<VkSurfaceFormatKHR.Buffer>(surface)
 
-            if (surfaceFormats.capacity() == 1) {
-                return if (surfaceFormats[0].format() == VK_FORMAT_UNDEFINED) {
-                    val ret = VkSurfaceFormatKHR.calloc()
-                    ret.format = requestFormats[0]
-                    ret.colorSpace = requestColorSpace
-                    ret
-                } else {
-                    surfaceFormats[0]
-                }
+        if (surfaceFormats.capacity() == 1) {
+            return if (surfaceFormats[0].format() == VK_FORMAT_UNDEFINED) {
+                val ret = VkSurfaceFormatKHR.calloc()
+                ret.format = requestFormats[0]
+                ret.colorSpace = requestColorSpace
+                ret
             } else {
-                for (request_i in 0 until requestFormats.size)
-                    for (avail_i in 0 until surfaceFormats.capacity())
-                        if (surfaceFormats[avail_i].format == requestFormats[request_i] && surfaceFormats[avail_i].colorSpace == requestColorSpace)
-                            return surfaceFormats[avail_i]
-                return surfaceFormats[0]
+                surfaceFormats[0]
             }
+        } else {
+            for (request_i in 0 until requestFormats.size)
+                for (avail_i in 0 until surfaceFormats.capacity())
+                    if (surfaceFormats[avail_i].format == requestFormats[request_i] && surfaceFormats[avail_i].colorSpace == requestColorSpace)
+                        return surfaceFormats[avail_i]
+            return surfaceFormats[0]
         }
     }
 
@@ -882,7 +875,7 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
                 }
 
                 run {
-                    val info = vk.SemaphoreCreateInfo{}
+                    val info = vk.SemaphoreCreateInfo {}
                     err = vkCreateSemaphore(device, info, allocator, lb).vkr
                     checkVkResult(err)
                     fd.imageAcquiredSemaphore = VkSemaphore(lb[0])
@@ -894,7 +887,7 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
         }
     }
 
-    private fun destroyWindowData(instance: VkInstance, device: VkDevice, wd: WindowData, allocator: VkAllocationCallbacks) {
+    private fun destroyWindowData(instance: VkInstance, device: VkDevice, wd: WindowData, allocator: VkAllocationCallbacks?) {
         device.waitIdle()
 
         for (i in 0 until IMGUI_VK_QUEUED_FRAMES) {
@@ -953,7 +946,7 @@ class ImplVk(val initInfo: ImGuiVulkanInitInfo, val vkRenderPass: VkRenderPass) 
                 this.oldSwapchain = oldSwapchain
             }
 
-            val cap = vk.SurfaceCapabilitiesKHR{}
+            val cap = vk.SurfaceCapabilitiesKHR {}
             err = physicalDevice.getSurfaceCapabilitiesKHR(wd.surface, cap)
             checkVkResult(err)
             if (info.minImageCount < cap.minImageCount)
